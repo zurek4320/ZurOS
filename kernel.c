@@ -169,7 +169,7 @@ void kmain(void) {
 	    	kprint("A lekarz tez baba!!! \\(^o^)/\n", 0x0B);
 	    } else if (strcmp(buffer, "help")) {
 	    	kprint("ZurOS commands list:\n", 0x0F);
-	    	kprint("help - prints out the list you're currently reading\nclear - clears the screen\ntest - prints out \"Hello, World!\"\nexit - shutdowns the computer\nZ - very funny polish joke\n", 0x0F);
+	    	kprint("clear - clears the screen\nexit - shutdowns the computer\nhelp - prints out the list you're currently reading\ntest - prints out \"Hello, World!\"\nZ - very funny polish joke\n", 0x0F);
 	    } else {
 	        kprint("Unknown command: ", 0x0F);
 	        kprint(buffer, 0x0F);
