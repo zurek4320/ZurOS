@@ -355,7 +355,7 @@ void kmain(void) {
     kprint("Currently running ZurOS.\n", os_color);
     kprint("For help (commands list) write \"help\" and click enter.\n", os_color);
 	kprint("Any spaces or tabs before or after the command won't be removed so for example \"	help \" won't do anything at all.\n", os_color);
-	kprint("You can use tab key to print 'Z' and ctrl key to print 'R'.\n", os_color);
+	kprint("You can use tab key to print 'Z'.\n", os_color);
 	kprint("Use clear very often because ZurOS doesn't have any scrolling!\n\n", os_color);
 	
 	int running = 1;
