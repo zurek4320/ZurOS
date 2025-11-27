@@ -15,7 +15,7 @@ ld -m elf_i386 -T link.ld -o kernel kasm.o kc.o
 cp kernel iso/boot/kernel
 
 # Create ISO for GRUB
-grub-mkrescue -o myos.iso iso
+grub-mkrescue -o ZurOS.iso iso
 
 # Boot in QEMU
-qemu-system-i386 -cdrom myos.iso
+qemu-system-i386 -cdrom ZurOS.iso
