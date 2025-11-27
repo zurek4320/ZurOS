@@ -435,7 +435,7 @@ void kmain(void) {
 	    	kprint("ZurOS commands list:\n", (os_color & 0xF0) | 0x0A);
 	    	kprint("ascii - prints out an ascii art of Felix Argyle\nclear - clears the screen\ncolor 0xXY - sets OS's color to 0xXY (example usage: color 0x0F, color 0x92, color 0xDF. For color codes 0x00-0x0F type test. You can use color codes in first 0 after x in the same way as in the second one, for example 0x0F is white text on black background and 0xF0 is black text on white background)\ncolor -themes - some cool color themes just for you\nexit - shutdowns the computer\nhelp - prints out the list you're currently reading\nkprint \"X\", 0xYZ - uses kernel's kprint function, for more info type kprint -help\ntest - prints out \"Hello, World!\"\nZ - very funny polish joke\n", os_color);
 	    } else if (starts_with(buffer, "kprint -help")) {
-	    	        kprint("How to use kernel's kprint function?\nkprint \"X\", YZ - prints text wrote in X with 0xYZ color\nSome examples: kprint \"Hello, World!\n\", 0x0F, kprint \"I like trains!\n\", 0x93", os_color);
+	    	        kprint("How to use kernel's kprint function?\nkprint \"X\", YZ - prints text wrote in X with 0xYZ color\nSome examples: kprint \"Hello, World!\", 0x0F, kprint \"I like trains!\", 0x93\n", os_color);
 	   	} else if (starts_with(buffer, "kprint ")) {
 	        echo_kprint(buffer);
 	        kprint(echo_text, echo_color);
