@@ -1,5 +1,5 @@
 # ZurOS
-ZurOS is a very simple OS that doesn't really do so far. ZurOS is a solo project, I started working on it at 25.11.2025.
+ZurOS is a very simple OS that doesn't really do to much so far. ZurOS is a solo project, I started working on it at 25.11.2025.
 
 # How to use ZurOS?
 *Note:* this section won't include tutorial on how to install or run ZurOS (to run it with qemu simply copy this repository and run run.sh, it will work on Ubuntu I dunno about other OSes)
