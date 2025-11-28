@@ -565,7 +565,7 @@ static int ata_write_safe(uint32_t lba, uint8_t* buf) {
 
     // Wait for drive not busy
     while ((inb(0x1F7) & 0x80) && timeout--) { }
-    if (timeout <= 0) { kprint("ATA write timeout (BSY)\n", 0x0C); return 0; }
+    if (timeout <= 0) { kprint("ATA write timeout (BSY)\n", (os_color & 0xF0) | 0x0C); return 0; }
 
     // Select LBA and sector count
     outb(0x1F6, 0xE0 | ((lba >> 24) & 0x0F));
@@ -578,7 +578,7 @@ static int ata_write_safe(uint32_t lba, uint8_t* buf) {
     timeout = 1000000;
     // Wait for DRQ = ready for data
     while (!(inb(0x1F7) & 0x08) && timeout--) { }
-    if (timeout <= 0) { kprint("ATA write timeout (DRQ)\n", 0x0C); return 0; }
+    if (timeout <= 0) { kprint("ATA write timeout (DRQ)\n", (os_color & 0xF0) | 0x0C); return 0; }
 
     // Write the 512-byte sector
     for (int i = 0; i < 256; i++)
@@ -587,7 +587,7 @@ static int ata_write_safe(uint32_t lba, uint8_t* buf) {
     timeout = 1000000;
     // Wait for drive to finish writing
     while ((inb(0x1F7) & 0x80) && timeout--) { }
-    if (timeout <= 0) { kprint("ATA write timeout after data!\n", 0x0C); return 0; }
+    if (timeout <= 0) { kprint("ATA write timeout after data!\n", (os_color & 0xF0) | 0x0C); return 0; }
 
     return 1; // success
 }
@@ -624,7 +624,7 @@ uint32_t fs_allocate_sectors_safe(uint32_t sectors_needed) {
             return start;
         }
     }
-    kprint("No free sectors available!\n", 0x0C);
+    kprint("No free sectors available!\n", (os_color & 0xF0) | 0x0C);
     return 0;
 }
 
@@ -725,7 +725,7 @@ void fs_write_file(const char* name, const char* text) {
         }
     }
 
-    kprint("No free file slots!\n", 0x0C);
+    kprint("No free file slots!\n", (os_color & 0xF0) | 0x0C);
 }
 
 
@@ -770,7 +770,7 @@ void fs_read_file(const char* name) {
             return;
         }
     }
-    kprint("File not found!\n", 0x0C);
+    kprint("File not found!\n", (os_color & 0xF0) | 0x0C);
 }
 
 void fs_delete_file(const char* name) {
@@ -780,11 +780,11 @@ void fs_delete_file(const char* name) {
             files[i].name[0] = '\0';
             files[i].size = 0;
             fs_save();          // save the updated file table
-            kprint("File deleted successfully!\n", 0x0A);
+            kprint("File deleted successfully!\n", (os_color & 0xF0) | 0x0A);
             return;
         }
     }
-    kprint("File not found!\n", 0x0C);
+    kprint("File not found!\n", (os_color & 0xF0) | 0x0C);
 }
 
 #define ZW_LINES 20
@@ -809,6 +809,7 @@ void zuros_writer(const char* filename) {
         for (int i = 0; i < ZW_LINES; i++)
             kprintnf(zw_buffer[i], os_color, i);
 
+		kprint("######## TYPE EXIT TO SAVE AND LEAVE, DISTRACT TO LEAVE WITHOUT SAVING. ########", (os_color & 0xF0) | 0x09);
         kprint("ZurOS writer >> ", os_color);
 
         // Read input
@@ -829,6 +830,9 @@ void zuros_writer(const char* filename) {
             fs_write_file(filename, zw_text);
             running = 0;
             break;
+        } else if (starts_with(line_input, "distract")) {
+            running = 0;
+            break;
         }
 
         // Handle "<line number> <text>" input
@@ -842,7 +846,7 @@ void zuros_writer(const char* filename) {
 
         // Require at least one space after the number
         if (line_input[offset] != ' ') {
-            kprintnf("Invalid command or line number", 0x0C, ZW_LINES + 1);
+            kprintnf("Invalid command or line number", (os_color & 0xF0) | 0x0C, ZW_LINES + 1);
             continue;
         }
 
@@ -855,7 +859,7 @@ void zuros_writer(const char* filename) {
                 zw_buffer[line_num - 1][i++] = line_input[offset++];
             zw_buffer[line_num - 1][i] = '\0';
         } else {
-            kprintnf("Invalid line number", 0x0C, ZW_LINES + 1);
+            kprintnf("Invalid line number", (os_color & 0xF0) | 0x0C, ZW_LINES + 1);
         }
     }
 }
@@ -956,7 +960,20 @@ void kmain(void) {
 	        kprint("Invalid color format! Use color 0xXY\n", (os_color & 0xF0) | 0x0C);
 	    } else if (strcmp(buffer, "help")) {
 	    	kprint("ZurOS commands list:\n", (os_color & 0xF0) | 0x0A);
-	    	kprint("ascii - prints out an ascii art of Felix Argyle\nclear - clears the screen\ncolor 0xXY - sets OS's color to 0xXY (example usage: color 0x0F, color 0x92, color 0xDF. For color codes 0x00-0x0F type test. You can use color codes in first 0 after x in the same way as in the second one, for example 0x0F is white text on black background and 0xF0 is black text on white background)\ncolor -themes - some cool color themes just for you\nexit - shutdowns the computer\nhelp - prints out the list you're currently reading\nkprint \"X\", 0xYZ - uses kernel's kprint function, for more info type kprint -help\ntest - prints out \"Hello, World!\"\nZ - very funny polish joke\n", os_color);
+	    	kprint("ascii - prints out an ascii art of Felix Argyle\n", os_color);
+	    	kprint("clear - clears the screen\n", os_color);
+	    	kprint("color 0xXY - sets OS's color to 0xXY (example usage: color 0x0F, color 0x92, color 0xDF. For color codes 0x00-0x0F type test. You can use color codes in first 0 after x in the same way as in the second one, for example 0x0F is white text on black background and 0xF0 is black text on white background)\n", os_color);
+	    	kprint("color -themes - some cool color themes just for you\n", os_color);
+	    	kprint("dir - prints out list of all files saved on ZurOS's hdd.img\n", os_color);
+	    	kprint("delete X - deletes X file (example usage: delete not_important.txt)\n", os_color);
+	    	kprint("exit - shutdowns the computer\n", os_color);
+	    	kprint("help - prints out the list you're currently reading\n", os_color);
+	    	kprint("kprint \"X\", 0xYZ - uses kernel's kprint function, for more info type kprint -help\n", os_color);
+	    	kprint("read X - prints out content of X file (example usage: read important.txt)\n", os_color);
+	    	kprint("test - prints out \"Hello, World!\"\n", os_color);
+	    	kprint("write X Y - writes Y to X file (example usage: write important.txt Hello, World!)\n", os_color);
+	    	kprint("zw X - writes into X file with ZurOS writer (for more info: zw -help | example usage: zw important.txt)\n", os_color);
+	    	kprint("Z - very funny polish joke\n", os_color);
 	    } else if (starts_with(buffer, "kprint -help")) {
 	    	        kprint("How to use kernel's kprint function?\nkprint \"X\", YZ - prints text wrote in X with 0xYZ color\nSome examples: kprint \"Hello, World!\", 0x0F, kprint \"I like trains!\", 0x93\n", os_color);
 	   	} else if (starts_with(buffer, "kprint ")) {
@@ -978,7 +995,7 @@ void kmain(void) {
 		    // find first space separating filename from text
 		    char* space = strchr(args, ' ');
 		    if (!space) {
-		        kprint("Usage: write <filename> <text>\n", 0x0C);
+		        kprint("Usage: write <filename> <text>\n", (os_color & 0xF0) | 0x0C);
 		        continue;
 		    }
 
@@ -989,9 +1006,9 @@ void kmain(void) {
 
 		    if (name && *text) {
 		        fs_write_file(name, text);
-		        kprint("File written successfully!\n", 0x0A);
+		        kprint("File written successfully!\n", (os_color & 0xF0) | 0x0A);
 		    } else {
-		        kprint("Usage: write <filename> <text>\n", 0x0C);
+		        kprint("Usage: write <filename> <text>\n", (os_color & 0xF0) | 0x0C);
 		    }
 		    text = "";
 		    name = "";
@@ -999,6 +1016,8 @@ void kmain(void) {
 	   	    fs_load();
 	   	    char* name = buffer + 7;  // skip "delete "
 	   	    fs_delete_file(name);
+	   	} else if (starts_with(buffer, "zw -help")) {
+			kprint("More about ZurOS writer\nZurOS writer, zw in short is a simple text editor with max 20 lines\nAt the bottom of the screen there will be a command prompt for zw, list of commands:\nX(int) Y(str) - writes Y to X line (\"3 Hello, World!\" will write \"Hello, World!\" at the 3th line)\nexit - exits and saves the file\ndistract - exits without saving\n", os_color);
 	   	} else if (starts_with(buffer, "zw ")) {
 	   	    char* filename = buffer + 3; // skip "zw "
 	   	    // optional: skip leading spaces
@@ -1007,7 +1026,7 @@ void kmain(void) {
 	   	        fs_load();               // make sure file table is up to date
 	   	        zuros_writer(filename);  // open the file in the editor
 	   	    } else {
-	   	        kprint("Usage: zw <filename>\n", 0x0C);
+	   	        kprint("Usage: zw <filename>\n", (os_color & 0xF0) | 0x0C);
 	   	    }
 	   	} else {
 	        kprint("Unknown command: ", os_color);
