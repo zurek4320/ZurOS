@@ -920,7 +920,7 @@ void kmain(void) {
 	    	        kprint("CLASSIC - 0x0F\n", 0x0F);
 	    	        kprint("LIGHT MODE - 0xF2\n", 0xF2);
 	    	        kprint("TEMPLE - 0xB2\n", 0xB2);
-	    	        kprint("SILLY UNREADABLE PINK - 0xDF\n", 0xDF);
+	    	        kprint("UNREADABLE PINK - 0xDF\n", 0xDF);
 	    } else if (strcmp(buffer, "ascii")) {
 	    	    	        kprint("..........-+-:::::::::::::::::::::::::--\n", os_color);
 	    	    	        kprint(".........:=:---+:::::::::::::::--:::=###\n", os_color);
@@ -1037,4 +1037,3 @@ void kmain(void) {
 
     for (;;);
 }
- 
