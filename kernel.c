@@ -5,6 +5,49 @@
 #define VGA_WIDTH 80
 #define VGA_HEIGHT 25
 
+
+// ================== C funtions from C libs ==================
+void* memcpy(void* dest, const void* src, size_t n) {
+    unsigned char* d = dest;
+    const unsigned char* s = src;
+    for (size_t i = 0; i < n; i++)
+        d[i] = s[i];
+    return dest;
+}
+
+void* memset(void* dest, int val, size_t n) {
+    unsigned char* d = dest;
+    for (size_t i = 0; i < n; i++)
+        d[i] = (unsigned char)val;
+    return dest;
+}
+
+char* strcpy(char* dest, const char* src) {
+    char* d = dest;
+    while ((*d++ = *src++));
+    return dest;
+}
+
+// very minimal strtok (doesn't handle all edge cases)
+char* strtok(char* str, const char* delim) {
+    static char* pos;
+    if (str) pos = str;
+    if (!pos) return NULL;
+
+    char* start = pos;
+    while (*pos && !strchr(delim, *pos)) pos++;
+    if (*pos) *pos++ = 0;
+    return start;
+}
+
+char* strchr(const char* s, int c) {
+    while (*s) {
+        if (*s == (char)c) return (char*)s;
+        s++;
+    }
+    return NULL;
+}
+
 volatile uint16_t* vga_memory = (volatile uint16_t*)0xB8000;
 int cursor_x = 0;
 int cursor_y = 0;
@@ -345,6 +388,292 @@ unsigned char hex_to_nibble(char c) {
     return 0; // fallback
 }
 
+// outb: write 8-bit value (byte)
+static inline void outb(uint16_t port, uint8_t value) {
+    __asm__ volatile ("outb %0, %1" : : "a"(value), "Nd"(port));
+}
+
+// inw: read 16-bit value (word)
+static inline uint16_t inw(uint16_t port) {
+    uint16_t ret;
+    __asm__ volatile ("inw %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;
+}
+
+// outl: write 32-bit value (dword)
+static inline void outl(uint16_t port, uint32_t value) {
+    __asm__ volatile ("outl %0, %1" : : "a"(value), "Nd"(port));
+}
+
+// inl: read 32-bit value (dword)
+static inline uint32_t inl(uint16_t port) {
+    uint32_t ret;
+    __asm__ volatile ("inl %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;
+}
+
+void ata_read28(uint32_t lba, uint8_t *buffer) {
+    outb(0x1F6, 0xE0 | ((lba >> 24) & 0x0F));
+    outb(0x1F2, 1);                    // sector count
+    outb(0x1F3, (uint8_t) lba);
+    outb(0x1F4, (uint8_t)(lba >> 8));
+    outb(0x1F5, (uint8_t)(lba >> 16));
+    outb(0x1F7, 0x20);                 // READ SECTORS
+    
+    // wait for data
+    while (!(inb(0x1F7) & 0x08));
+
+    // read 256 words = 512 bytes
+    for (int i = 0; i < 256; i++)
+        ((uint16_t*)buffer)[i] = inw(0x1F0);
+}
+
+void ata_write28(uint32_t lba, uint8_t *buffer) {
+    outb(0x1F6, 0xE0 | ((lba >> 24) & 0x0F));
+    outb(0x1F2, 1);
+    outb(0x1F3, (uint8_t) lba);
+    outb(0x1F4, (uint8_t)(lba >> 8));
+    outb(0x1F5, (uint8_t)(lba >> 16));
+    outb(0x1F7, 0x30); // WRITE SECTORS
+
+    // Write 256 words immediately
+    for (int i = 0; i < 256; i++)
+        outw(0x1F0, ((uint16_t*)buffer)[i]);
+}
+
+typedef struct {
+    uint32_t fat_start;
+    uint32_t fat_size;
+    uint32_t data_start;
+    uint32_t sectors_per_cluster;
+} fat32_t;
+
+fat32_t fat;
+
+void fat32_mount() {
+    uint8_t sector[512];
+    ata_read28(0, sector);
+    
+	uint16_t reserved = *(uint16_t*)&sector[0x0E];
+	uint8_t fats = sector[0x10];
+	uint32_t fat_size = *(uint32_t*)&sector[0x24];
+
+	fat.fat_start = reserved;
+	fat.fat_size = fat_size;
+	fat.data_start = reserved + fats * fat_size;
+	fat.sectors_per_cluster = sector[13];
+}
+
+struct FileEntry {
+    char     name[16];   // "file.txt"
+    uint32_t start;      // LBA where data starts
+    uint32_t size;       // size in bytes
+    uint8_t  used;       // 1 = used, 0 = empty
+};
+
+#define MAX_FILES 128
+#define FILETABLE_LBA 4096
+#define FIRST_DATA_LBA 4104
+
+typedef struct {
+    char name[16];
+    uint32_t start;
+    uint32_t size;
+    uint8_t used;
+    uint8_t _pad[7];
+} FileEntry;
+
+FileEntry files[MAX_FILES];
+
+void fs_load() {
+    uint8_t buffer[512];
+
+    for (int i = 0; i < 8; i++) {               // 8 sectors = 4096 bytes
+        ata_read28(FILETABLE_LBA + i, buffer);
+        memcpy(((uint8_t*)files) + i*512, buffer, 512);
+    }
+}
+
+void fs_save() {
+    uint8_t buffer[512];
+
+    for (int i = 0; i < 8; i++) {
+        memcpy(buffer, ((uint8_t*)files) + i*512, 512);
+        ata_write28(FILETABLE_LBA + i, buffer);
+    }
+}
+
+uint32_t fs_allocate_sectors(uint32_t sectors) {
+    static uint32_t next_free_lba = FIRST_DATA_LBA;
+    uint32_t start = next_free_lba;
+    next_free_lba += sectors;
+    return start;
+}
+
+static int ata_write_safe(uint32_t lba, uint8_t* buf) {
+    int timeout = 1000000;
+
+    // Wait for drive not busy
+    while ((inb(0x1F7) & 0x80) && timeout--) { }
+    if (timeout <= 0) { kprint("ATA write timeout (BSY)\n", 0x0C); return 0; }
+
+    // Select LBA and sector count
+    outb(0x1F6, 0xE0 | ((lba >> 24) & 0x0F));
+    outb(0x1F2, 1);
+    outb(0x1F3, (uint8_t) lba);
+    outb(0x1F4, (uint8_t)(lba >> 8));
+    outb(0x1F5, (uint8_t)(lba >> 16));
+    outb(0x1F7, 0x30); // WRITE SECTOR
+
+    timeout = 1000000;
+    // Wait for DRQ = ready for data
+    while (!(inb(0x1F7) & 0x08) && timeout--) { }
+    if (timeout <= 0) { kprint("ATA write timeout (DRQ)\n", 0x0C); return 0; }
+
+    // Write the 512-byte sector
+    for (int i = 0; i < 256; i++)
+        outw(0x1F0, ((uint16_t*)buf)[i]);
+
+    timeout = 1000000;
+    // Wait for drive to finish writing
+    while ((inb(0x1F7) & 0x80) && timeout--) { }
+    if (timeout <= 0) { kprint("ATA write timeout after data!\n", 0x0C); return 0; }
+
+    return 1; // success
+}
+
+void fs_write_file(const char* name, const char* text) {
+    // First, calculate the actual length after converting "\n" into real newlines
+    uint32_t len = 0;
+    for (const char* p = text; *p; p++) {
+        if (*p == '\\' && *(p+1) == 'n') {
+            len++;
+            p++; // skip 'n'
+        } else {
+            len++;
+        }
+    }
+
+    uint32_t sectors = (len + 511) / 512;
+    uint8_t buffer[512];
+
+    // Convert input text into a temporary buffer with real newlines
+    char temp[len];
+    uint32_t idx = 0;
+    for (const char* p = text; *p; p++) {
+        if (*p == '\\' && *(p+1) == 'n') {
+            temp[idx++] = '\n';
+            p++;
+        } else {
+            temp[idx++] = *p;
+        }
+    }
+
+    // --- Overwrite existing file if found ---
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (files[i].used && strcmp(files[i].name, name) == 1) {
+            uint32_t lba = files[i].start;
+            for (uint32_t s = 0; s < sectors; s++) {
+                memset(buffer, 0, 512);
+                uint32_t remaining = len - s*512;
+                if (remaining > 512) remaining = 512;
+                if (remaining == 0) break;
+
+                memcpy(buffer, temp + s*512, remaining);
+
+                if (!ata_write_safe(lba + s, buffer)) return;
+            }
+            files[i].size = len;
+            fs_save();
+            return;
+        }
+    }
+
+    // --- Create new file ---
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (!files[i].used) {
+            uint32_t lba = fs_allocate_sectors(sectors);
+            files[i].used = 1;
+            strcpy(files[i].name, name);
+            files[i].start = lba;
+            files[i].size = len;
+
+            for (uint32_t s = 0; s < sectors; s++) {
+                memset(buffer, 0, 512);
+                uint32_t remaining = len - s*512;
+                if (remaining > 512) remaining = 512;
+                if (remaining == 0) break;
+
+                memcpy(buffer, temp + s*512, remaining);
+
+                if (!ata_write_safe(lba + s, buffer)) return;
+            }
+            fs_save();
+            return;
+        }
+    }
+
+    kprint("No free file slots available!\n", 0x0C);
+}
+
+void fs_dir() {
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (files[i].used) {
+            kprint(files[i].name, os_color);
+            kput_char(' ', os_color);
+            char size_str[12];
+            int sz = files[i].size;
+            int pos = 0;
+            do {
+                size_str[pos++] = '0' + sz % 10;
+                sz /= 10;
+            } while (sz > 0);
+            // reverse
+            for (int j = pos-1; j >= 0; j--) kput_char(size_str[j], os_color);
+            kput_char('\n', os_color);
+        }
+    }
+}
+
+#define MAX_FILE_PRINT 4096
+
+void fs_read_file(const char* name) {
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (files[i].used && strcmp(files[i].name, name) == 1) {
+            uint32_t len = files[i].size;
+            uint32_t sectors = (len + 511) / 512;
+            uint8_t buffer[512];
+
+            for (uint32_t s = 0; s < sectors; s++) {
+                ata_read28(files[i].start + s, buffer);
+                uint32_t remaining = len - s*512;
+                if (remaining > 512) remaining = 512;
+                char temp[remaining + 1];
+                memcpy(temp, buffer, remaining);
+                temp[remaining] = '\0';
+                kprint(temp, os_color);  // kprint handles real '\n' automatically
+            }
+            kput_char('\n', os_color);
+            return;
+        }
+    }
+    kprint("File not found!\n", 0x0C);
+}
+
+void fs_delete_file(const char* name) {
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (files[i].used && strcmp(files[i].name, name) == 1) {
+            files[i].used = 0;  // mark as unused
+            files[i].name[0] = '\0';
+            files[i].size = 0;
+            fs_save();          // save the updated file table
+            kprint("File deleted successfully!\n", 0x0A);
+            return;
+        }
+    }
+    kprint("File not found!\n", 0x0C);
+}
+
 // finally we can run this little goober
 void kmain(void) {
 	os_color = 0x0F;
@@ -355,11 +684,19 @@ void kmain(void) {
     kprint("Currently running ZurOS.\n", os_color);
     kprint("For help (commands list) write \"help\" and click enter.\n", os_color);
 	kprint("Any spaces or tabs before or after the command won't be removed so for example \"	help \" won't do anything at all.\n", os_color);
-	kprint("You can use tab key to print 'Z'.\n", os_color);
 	kprint("Use clear very often because ZurOS doesn't have any scrolling!\n\n", os_color);
+
+	uint8_t sec[512];
 	
+	kprint("Mounting FAT32...\n", os_color);
+	fat32_mount();
+
 	int running = 1;
     char buffer[256];
+
+	kprint("\nPress enter to continue...", os_color);
+	kread_line(buffer, 256);
+	kclear();
     
 	while (running) {
 	    kprint("~/[ZurOS >:3]$ ", (os_color & 0xF0) | 0x09);
@@ -388,7 +725,7 @@ void kmain(void) {
 	    	kclear();
 	    } else if (strcmp(buffer, "Z")) {
 	    	kprint("Przychodzi baba do lekarza...\n", os_color);
-	    	kprint("A lekarz tez baba!!! \\(^o^)/\n", os_color);
+	    	kprint("A lekarz tez baba!!!\n", os_color);
 	    } else if (starts_with(buffer, "color -themes")) {
 	    	        kprint("CLASSIC - 0x0F\n", 0x0F);
 	    	        kprint("LIGHT MODE - 0xF2\n", 0xF2);
@@ -439,7 +776,26 @@ void kmain(void) {
 	   	} else if (starts_with(buffer, "kprint ")) {
 	        echo_kprint(buffer);
 	        kprint(echo_text, echo_color);
-	   	}  else {
+		} else if (strcmp(buffer, "dir")) {
+			fs_load();
+		    fs_dir();
+		} else if (starts_with(buffer, "read ")) {
+		    fs_load();
+		    char* name = buffer + 5; // skip "read "
+		    fs_read_file(name);
+		} else if (starts_with(buffer, "write ")) {
+	   	    fs_load();
+	   	    char* args = buffer + 6;         // skip "write "
+	   	    char* name = strtok(args, " ");  // filename
+	   	    char* text = strtok(NULL, "");   // rest of line = content
+	   	    if(name && text)
+	   	        fs_write_file(name, text);
+	   	        kprint("File written successfully!\n", 0x0A);
+	   	} else if (starts_with(buffer, "delete ")) {
+	   	    fs_load();
+	   	    char* name = buffer + 7;  // skip "delete "
+	   	    fs_delete_file(name);
+	   	} else {
 	        kprint("Unknown command: ", os_color);
 	        kprint(buffer, os_color);
 	        kput_char('\n', os_color);
