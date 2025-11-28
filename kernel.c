@@ -5,7 +5,6 @@
 #define VGA_WIDTH 80
 #define VGA_HEIGHT 25
 
-
 // ================== C funtions from C libs ==================
 void* memcpy(void* dest, const void* src, size_t n) {
     unsigned char* d = dest;
@@ -87,10 +86,42 @@ void kput_char(char c, uint8_t color) {
     }
 }
 
+void kput_charnf(char c, uint8_t color, int y) {
+    int cursor_y_back = cursor_y;
+    cursor_y = y;
+    cursor_x = 0;               // start at beginning of the given row
+    if (c == '\n') {
+        cursor_x = 0;
+        cursor_y++;            // increment the row correctly
+    } else {
+        vga_memory[cursor_y * VGA_WIDTH + cursor_x] = (color << 8) | c;
+        cursor_x++;
+        if (cursor_x >= VGA_WIDTH) {
+            cursor_x = 0;
+            cursor_y++;       // increment the row correctly
+        }
+    }
+    if (cursor_y >= VGA_HEIGHT) {
+        cursor_y = 0;
+    }
+    cursor_y = cursor_y_back;   // restore the global cursor_y so kprintnf controls the row
+}
+
 // prints out a bunch of single characters (chad function)
 void kprint(const char* str, uint8_t color) {
     for (int i = 0; str[i] != '\0'; i++) {
         kput_char(str[i], color);
+    }
+}
+
+void kprintnf(const char* str, uint8_t color, int y) {
+    int x = 0; // local cursor for this line
+    for (int i = 0; str[i]; i++) {
+        char c = str[i];
+        if (c == '\n') break; // ignore newlines in kprintnf
+        if (x >= VGA_WIDTH) break;
+        vga_memory[y * VGA_WIDTH + x] = (color << 8) | c;
+        x++;
     }
 }
 
@@ -288,12 +319,12 @@ char* strncpy(char* dest, const char* src, size_t n) {
 int strcmp(const char* a, const char* b) {
     int i = 0;
     while (a[i] && b[i]) {
-        if (a[i] != b[i]) return 0;
+        if (a[i] != b[i]) return 0;  // mismatch
         i++;
     }
-    return a[i] == b[i];
+    // both must end at the same time
+    return (a[i] == b[i]) ? 1 : 0;
 }
-
 static inline void outw(uint16_t port, uint16_t val) {
     __asm__ volatile("outw %0, %1" : : "a"(val), "Nd"(port));
 }
@@ -475,6 +506,8 @@ struct FileEntry {
 #define FILETABLE_LBA 4096
 #define FIRST_DATA_LBA 4104
 
+uint32_t next_free_lba = FIRST_DATA_LBA;
+
 typedef struct {
     char name[16];
     uint32_t start;
@@ -488,9 +521,27 @@ FileEntry files[MAX_FILES];
 void fs_load() {
     uint8_t buffer[512];
 
+    // Clear files first so unused entries are clean
+    memset(files, 0, sizeof(files));
+
     for (int i = 0; i < 8; i++) {               // 8 sectors = 4096 bytes
         ata_read28(FILETABLE_LBA + i, buffer);
         memcpy(((uint8_t*)files) + i*512, buffer, 512);
+    }
+
+    // Ensure every filename is NUL-terminated (defensive)
+    for (int i = 0; i < MAX_FILES; i++) {
+        files[i].name[15] = '\0'; // ensure last byte is NUL
+    }
+
+    // Recompute next_free_lba based on existing files so allocations never overlap
+    next_free_lba = FIRST_DATA_LBA;
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (files[i].used) {
+            uint32_t file_sectors = (files[i].size + 511) / 512;
+            uint32_t end_lba = files[i].start + file_sectors;
+            if (end_lba > next_free_lba) next_free_lba = end_lba;
+        }
     }
 }
 
@@ -504,7 +555,6 @@ void fs_save() {
 }
 
 uint32_t fs_allocate_sectors(uint32_t sectors) {
-    static uint32_t next_free_lba = FIRST_DATA_LBA;
     uint32_t start = next_free_lba;
     next_free_lba += sectors;
     return start;
@@ -542,57 +592,122 @@ static int ata_write_safe(uint32_t lba, uint8_t* buf) {
     return 1; // success
 }
 
-void fs_write_file(const char* name, const char* text) {
-    // First, calculate the actual length after converting "\n" into real newlines
-    uint32_t len = 0;
-    for (const char* p = text; *p; p++) {
-        if (*p == '\\' && *(p+1) == 'n') {
-            len++;
-            p++; // skip 'n'
-        } else {
-            len++;
+#define MAX_SECTORS 65536 // adjust to your disk size
+uint8_t sector_bitmap[MAX_SECTORS / 8]; // 1 bit per sector: 0 = free, 1 = used
+
+// ----------------- bitmap helpers -----------------
+void mark_sector(uint32_t lba, int used) {
+    uint32_t byte = lba / 8;
+    uint8_t bit = 1 << (lba % 8);
+    if (used)
+        sector_bitmap[byte] |= bit;
+    else
+        sector_bitmap[byte] &= ~bit;
+}
+
+int is_sector_free(uint32_t lba) {
+    uint32_t byte = lba / 8;
+    uint8_t bit = 1 << (lba % 8);
+    return !(sector_bitmap[byte] & bit);
+}
+
+// ----------------- scan and allocate -----------------
+uint32_t fs_allocate_sectors_safe(uint32_t sectors_needed) {
+    for (uint32_t start = FIRST_DATA_LBA; start + sectors_needed < MAX_SECTORS; start++) {
+        int free = 1;
+        for (uint32_t s = 0; s < sectors_needed; s++) {
+            if (!is_sector_free(start + s)) { free = 0; break; }
+        }
+        if (free) {
+            for (uint32_t s = 0; s < sectors_needed; s++)
+                mark_sector(start + s, 1);
+            return start;
         }
     }
+    kprint("No free sectors available!\n", 0x0C);
+    return 0;
+}
+
+// ----------------- rebuild bitmap after loading -----------------
+void fs_build_bitmap() {
+    memset(sector_bitmap, 0, sizeof(sector_bitmap));
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (files[i].used) {
+            uint32_t sectors = (files[i].size + 511) / 512;
+            for (uint32_t s = 0; s < sectors; s++)
+                mark_sector(files[i].start + s, 1);
+        }
+    }
+}
+
+// ----------------- new fs_write_file -----------------
+void fs_write_file(const char* name, const char* text) {
+    // convert "\n" to real newlines
+    uint32_t len = 0;
+    for (const char* p = text; *p; p++) {
+        if (*p == '\\' && *(p+1) == 'n') { len++; p++; }
+        else len++;
+    }
+
+    char temp[len + 1];
+    uint32_t idx = 0;
+    for (const char* p = text; *p; p++) {
+        if (*p == '\\' && *(p+1) == 'n') { temp[idx++] = '\n'; p++; }
+        else temp[idx++] = *p;
+    }
+    temp[idx] = '\0';
 
     uint32_t sectors = (len + 511) / 512;
     uint8_t buffer[512];
 
-    // Convert input text into a temporary buffer with real newlines
-    char temp[len];
-    uint32_t idx = 0;
-    for (const char* p = text; *p; p++) {
-        if (*p == '\\' && *(p+1) == 'n') {
-            temp[idx++] = '\n';
-            p++;
-        } else {
-            temp[idx++] = *p;
-        }
-    }
-
-    // --- Overwrite existing file if found ---
+    // --- check if file exists ---
     for (int i = 0; i < MAX_FILES; i++) {
         if (files[i].used && strcmp(files[i].name, name) == 1) {
-            uint32_t lba = files[i].start;
-            for (uint32_t s = 0; s < sectors; s++) {
-                memset(buffer, 0, 512);
-                uint32_t remaining = len - s*512;
-                if (remaining > 512) remaining = 512;
-                if (remaining == 0) break;
+            uint32_t old_sectors = (files[i].size + 511) / 512;
 
-                memcpy(buffer, temp + s*512, remaining);
-
-                if (!ata_write_safe(lba + s, buffer)) return;
+            if (sectors <= old_sectors) {
+                // write in place
+                for (uint32_t s = 0; s < sectors; s++) {
+                    memset(buffer, 0, 512);
+                    uint32_t remaining = len - s*512;
+                    if (remaining > 512) remaining = 512;
+                    memcpy(buffer, temp + s*512, remaining);
+                    if (!ata_write_safe(files[i].start + s, buffer)) return;
+                }
+                // zero leftover sectors
+                for (uint32_t s = sectors; s < old_sectors; s++) {
+                    memset(buffer, 0, 512);
+                    if (!ata_write_safe(files[i].start + s, buffer)) return;
+                    mark_sector(files[i].start + s, 0); // free old sectors
+                }
+                files[i].size = len;
+                fs_save();
+                return;
+            } else {
+                // allocate new sectors safely
+                uint32_t new_lba = fs_allocate_sectors_safe(sectors);
+                for (uint32_t s = 0; s < sectors; s++) {
+                    memset(buffer, 0, 512);
+                    uint32_t remaining = len - s*512;
+                    if (remaining > 512) remaining = 512;
+                    memcpy(buffer, temp + s*512, remaining);
+                    if (!ata_write_safe(new_lba + s, buffer)) return;
+                }
+                // free old sectors
+                for (uint32_t s = 0; s < old_sectors; s++)
+                    mark_sector(files[i].start + s, 0);
+                files[i].start = new_lba;
+                files[i].size = len;
+                fs_save();
+                return;
             }
-            files[i].size = len;
-            fs_save();
-            return;
         }
     }
 
-    // --- Create new file ---
+    // --- new file ---
     for (int i = 0; i < MAX_FILES; i++) {
         if (!files[i].used) {
-            uint32_t lba = fs_allocate_sectors(sectors);
+            uint32_t lba = fs_allocate_sectors_safe(sectors);
             files[i].used = 1;
             strcpy(files[i].name, name);
             files[i].start = lba;
@@ -602,10 +717,7 @@ void fs_write_file(const char* name, const char* text) {
                 memset(buffer, 0, 512);
                 uint32_t remaining = len - s*512;
                 if (remaining > 512) remaining = 512;
-                if (remaining == 0) break;
-
                 memcpy(buffer, temp + s*512, remaining);
-
                 if (!ata_write_safe(lba + s, buffer)) return;
             }
             fs_save();
@@ -613,8 +725,9 @@ void fs_write_file(const char* name, const char* text) {
         }
     }
 
-    kprint("No free file slots available!\n", 0x0C);
+    kprint("No free file slots!\n", 0x0C);
 }
+
 
 void fs_dir() {
     for (int i = 0; i < MAX_FILES; i++) {
@@ -651,7 +764,7 @@ void fs_read_file(const char* name) {
                 char temp[remaining + 1];
                 memcpy(temp, buffer, remaining);
                 temp[remaining] = '\0';
-                kprint(temp, os_color);  // kprint handles real '\n' automatically
+                kprint(temp, os_color);
             }
             kput_char('\n', os_color);
             return;
@@ -672,6 +785,79 @@ void fs_delete_file(const char* name) {
         }
     }
     kprint("File not found!\n", 0x0C);
+}
+
+#define ZW_LINES 20
+#define ZW_WIDTH 80
+
+char zw_buffer[ZW_LINES][ZW_WIDTH + 1]; // +1 for null terminator
+
+void zuros_writer(const char* filename) {
+
+    // Initialize buffer
+    for (int i = 0; i < ZW_LINES; i++)
+        zw_buffer[i][0] = '\0';
+
+    char line_input[ZW_WIDTH + 1];
+    int running = 1;
+
+    while (running) {
+        kclear();
+        cursor_y = 20;
+
+        // Draw all 20 lines
+        for (int i = 0; i < ZW_LINES; i++)
+            kprintnf(zw_buffer[i], os_color, i);
+
+        kprint("ZurOS writer >> ", os_color);
+
+        // Read input
+        char line_input[ZW_WIDTH + 1];
+        kread_line(line_input, ZW_WIDTH + 1);
+
+        // Exit command
+        if (starts_with(line_input, "exit")) {
+            // Save file on exit
+            char zw_text[ZW_LINES * ZW_WIDTH + 1];
+            int idx = 0;
+            for (int i = 0; i < ZW_LINES; i++) {
+                for (int j = 0; zw_buffer[i][j]; j++)
+                    zw_text[idx++] = zw_buffer[i][j];
+                zw_text[idx++] = '\n';
+            }
+            zw_text[idx] = '\0';
+            fs_write_file(filename, zw_text);
+            running = 0;
+            break;
+        }
+
+        // Handle "<line number> <text>" input
+        int line_num = 0, offset = 0;
+
+        // Parse digits for line number
+        while (line_input[offset] >= '0' && line_input[offset] <= '9') {
+            line_num = line_num * 10 + (line_input[offset] - '0');
+            offset++;
+        }
+
+        // Require at least one space after the number
+        if (line_input[offset] != ' ') {
+            kprintnf("Invalid command or line number", 0x0C, ZW_LINES + 1);
+            continue;
+        }
+
+        // Skip all spaces
+        while (line_input[offset] == ' ') offset++;
+
+        if (line_num >= 1 && line_num <= ZW_LINES) {
+            int i = 0;
+            while (line_input[offset] && i < ZW_WIDTH)
+                zw_buffer[line_num - 1][i++] = line_input[offset++];
+            zw_buffer[line_num - 1][i] = '\0';
+        } else {
+            kprintnf("Invalid line number", 0x0C, ZW_LINES + 1);
+        }
+    }
 }
 
 // finally we can run this little goober
@@ -784,17 +970,45 @@ void kmain(void) {
 		    char* name = buffer + 5; // skip "read "
 		    fs_read_file(name);
 		} else if (starts_with(buffer, "write ")) {
-	   	    fs_load();
-	   	    char* args = buffer + 6;         // skip "write "
-	   	    char* name = strtok(args, " ");  // filename
-	   	    char* text = strtok(NULL, "");   // rest of line = content
-	   	    if(name && text)
-	   	        fs_write_file(name, text);
-	   	        kprint("File written successfully!\n", 0x0A);
+			fs_load();
+		
+		    char* args = buffer + 6;  // skip "write "
+		    while (*args == ' ') args++; // skip leading spaces
+
+		    // find first space separating filename from text
+		    char* space = strchr(args, ' ');
+		    if (!space) {
+		        kprint("Usage: write <filename> <text>\n", 0x0C);
+		        continue;
+		    }
+
+		    *space = '\0';         // terminate filename
+		    char* name = args;     // filename
+		    char* text = space + 1;
+		    while (*text == ' ') text++; // skip spaces before content
+
+		    if (name && *text) {
+		        fs_write_file(name, text);
+		        kprint("File written successfully!\n", 0x0A);
+		    } else {
+		        kprint("Usage: write <filename> <text>\n", 0x0C);
+		    }
+		    text = "";
+		    name = "";
 	   	} else if (starts_with(buffer, "delete ")) {
 	   	    fs_load();
 	   	    char* name = buffer + 7;  // skip "delete "
 	   	    fs_delete_file(name);
+	   	} else if (starts_with(buffer, "zw ")) {
+	   	    char* filename = buffer + 3; // skip "zw "
+	   	    // optional: skip leading spaces
+	   	    while (*filename == ' ') filename++;
+	   	    if (*filename) {
+	   	        fs_load();               // make sure file table is up to date
+	   	        zuros_writer(filename);  // open the file in the editor
+	   	    } else {
+	   	        kprint("Usage: zw <filename>\n", 0x0C);
+	   	    }
 	   	} else {
 	        kprint("Unknown command: ", os_color);
 	        kprint(buffer, os_color);
@@ -804,3 +1018,4 @@ void kmain(void) {
 
     for (;;);
 }
+ 
