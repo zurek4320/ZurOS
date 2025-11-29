@@ -793,12 +793,10 @@ void fs_delete_file(const char* name) {
 char zw_buffer[ZW_LINES][ZW_WIDTH + 1]; // +1 for null terminator
 
 void zuros_writer(const char* filename) {
-
     // Initialize buffer
     for (int i = 0; i < ZW_LINES; i++)
         zw_buffer[i][0] = '\0';
 
-    char line_input[ZW_WIDTH + 1];
     int running = 1;
 
     while (running) {
@@ -809,26 +807,43 @@ void zuros_writer(const char* filename) {
         for (int i = 0; i < ZW_LINES; i++)
             kprintnf(zw_buffer[i], os_color, i);
 
-		kprint("######## TYPE EXIT TO SAVE AND LEAVE, DISTRACT TO LEAVE WITHOUT SAVING. ########", (os_color & 0xF0) | 0x09);
+        kprint("######## TYPE EXIT TO SAVE AND LEAVE, DISTRACT TO LEAVE WITHOUT SAVING. ########", (os_color & 0xF0) | 0x09);
         kprint("ZurOS writer >> ", os_color);
 
-        // Read input
         char line_input[ZW_WIDTH + 1];
         kread_line(line_input, ZW_WIDTH + 1);
 
         // Exit command
         if (starts_with(line_input, "exit")) {
-        	fs_delete_file(filename);
-            // Save file on exit
-            char zw_text[ZW_LINES * ZW_WIDTH + 1];
+            fs_delete_file(filename);
+
+            // Build zw_text from buffer
+            char zw_text[ZW_LINES * (ZW_WIDTH + 1) + 1]; // +1 for null terminator
             int idx = 0;
             for (int i = 0; i < ZW_LINES; i++) {
                 for (int j = 0; zw_buffer[i][j]; j++)
                     zw_text[idx++] = zw_buffer[i][j];
-                zw_text[idx++] = '\n';
+                zw_text[idx++] = '\n'; // add line break in buffer only
             }
             zw_text[idx] = '\0';
-            fs_write_file(filename, zw_text);
+
+            // Escape '\n' and '\' for storing in file
+            char escaped_text[ZW_LINES * (ZW_WIDTH * 2 + 3) + 1]; // max expansion
+            int j = 0;
+            for (int i = 0; zw_text[i]; i++) {
+                if (zw_text[i] == '\n') {
+                    escaped_text[j++] = '\\';
+                    escaped_text[j++] = 'n';
+                } else if (zw_text[i] == '\\') {
+                    escaped_text[j++] = '\\';
+                    escaped_text[j++] = '\\';
+                } else {
+                    escaped_text[j++] = zw_text[i];
+                }
+            }
+            escaped_text[j] = '\0';
+
+            fs_write_file(filename, escaped_text);
             running = 0;
             break;
         } else if (starts_with(line_input, "distract")) {
@@ -839,19 +854,16 @@ void zuros_writer(const char* filename) {
         // Handle "<line number> <text>" input
         int line_num = 0, offset = 0;
 
-        // Parse digits for line number
         while (line_input[offset] >= '0' && line_input[offset] <= '9') {
             line_num = line_num * 10 + (line_input[offset] - '0');
             offset++;
         }
 
-        // Require at least one space after the number
         if (line_input[offset] != ' ') {
             kprintnf("Invalid command or line number", (os_color & 0xF0) | 0x0C, ZW_LINES + 1);
             continue;
         }
 
-        // Skip all spaces
         while (line_input[offset] == ' ') offset++;
 
         if (line_num >= 1 && line_num <= ZW_LINES) {
@@ -864,6 +876,13 @@ void zuros_writer(const char* filename) {
         }
     }
 }
+
+typedef void (*command_func_t)(const char*);
+
+typedef struct {
+    const char* name;
+    command_func_t func;
+} Commands;
 
 #define MAX_SAVED_FILES 128
 #define MAX_FILE_CONTENT 4096
@@ -918,6 +937,247 @@ void restore_all_files() {
     }
 }
 
+void delay(uint32_t milliseconds) {    volatile uint32_t count;
+    for (uint32_t ms = 0; ms < milliseconds; ms++) {
+        for (count = 0; count < 100000; count++) {
+            __asm__ volatile("nop"); // prevent compiler optimizing it away
+        }
+    }
+}
+
+
+void handle_command(char* buffer);
+
+// ----------------- Command functions -----------------
+void cmd_clear(char* args) {
+    (void)args;
+    kclear();
+}
+
+void cmd_help(char* args) {
+    (void)args;
+    kprint("ZurOS commands list:\n", (os_color & 0xF0) | 0x0A);
+    kprint("ascii - prints out an ascii art\n", os_color);
+    kprint("clear - clears the screen\n", os_color);
+    kprint("color 0xXY - sets OS's color\n", os_color);
+    kprint("color -themes - shows color themes\n", os_color);
+    kprint("dir - lists all files\n", os_color);
+    kprint("delete X - deletes file X\n", os_color);
+    kprint("exit - shuts down computer\n", os_color);
+    kprint("kprint \"X\", YZ - prints X in color YZ\n", os_color);
+    kprint("read X - prints file X\n", os_color);
+    kprint("test - prints test messages\n", os_color);
+    kprint("write X Y - writes Y to X file\n", os_color);
+    kprint("zw X - opens ZurOS writer for file X\n", os_color);
+    kprint("Z - very funny polish joke\n", os_color);
+}
+
+void cmd_exit(char* args) {
+	fs_dir();
+	delay(500);
+	kclear();
+	kprint("Goodbye...", os_color);
+	delay(2500);
+    (void)args;
+    shutdown();
+}
+
+void cmd_test(char* args) {
+    (void)args;
+    for (int i = 0; i < 16; i++) {
+        kprint("Hello, World! - 0x", i);
+        kput_char("0123456789ABCDEF"[i], i);
+        kput_char('\n', i);
+    }
+}
+
+void cmd_Z(char* args) {
+    (void)args;
+    kprint("Przychodzi baba do lekarza...\n", os_color);
+    kprint("A lekarz tez baba!!!\n", os_color);
+}
+
+void cmd_ascii(char* args) {
+    (void)args;
+    kprint("ASCII art output...\n", os_color); // you can put the full art here
+}
+
+void cmd_color(char* args) {
+    while (*args == ' ') args++;
+    if (*args == '-') {
+        if (strcmp(args, "-themes")) {
+            kprint("CLASSIC - 0x0F\n", 0x0F);
+            kprint("LIGHT MODE - 0xF2\n", 0xF2);
+            kprint("TEMPLE - 0xB2\n", 0xB2);
+            kprint("UNREADABLE PINK - 0xDF\n", 0xDF);
+        }
+        return;
+    }
+    if (args[0] == '0' && (args[1] == 'x' || args[1] == 'X')) {
+        args += 2;
+        if ((args[0] >= '0' && args[0] <= '9') || (args[0] >= 'A' && args[0] <= 'F') || (args[0] >= 'a' && args[0] <= 'f')) {
+            if ((args[1] >= '0' && args[1] <= '9') || (args[1] >= 'A' && args[1] <= 'F') || (args[1] >= 'a' && args[1] <= 'f')) {
+                os_color = (hex_to_nibble(args[0]) << 4) | hex_to_nibble(args[1]);
+                kclear();
+                return;
+            }
+        }
+    }
+    kprint("Invalid color format! Use color 0xXY\n", (os_color & 0xF0) | 0x0C);
+}
+
+void cmd_dir(char* args) {
+    (void)args;
+    fs_load();
+    fs_dir();
+}
+
+void cmd_read(char* args) {
+    while (*args == ' ') args++;
+    fs_load();
+    fs_read_file(args);
+}
+
+void cmd_write(char* args) {
+    while (*args == ' ') args++;
+    char* space = strchr(args, ' ');
+    if (!space) {
+        kprint("Usage: write <filename> <text>\n", (os_color & 0xF0) | 0x0C);
+        return;
+    }
+    *space = '\0';
+    char* filename = args;
+    char* text = space + 1;
+    while (*text == ' ') text++;
+    fs_delete_file(filename);
+    fs_write_file(filename, text);
+    kprint("File written successfully!\n", (os_color & 0xF0) | 0x0A);
+}
+
+void cmd_delete(char* args) {
+    while (*args == ' ') args++;
+    fs_load();
+    fs_delete_file(args);
+}
+
+void cmd_zw(char* args) {
+    while (*args == ' ') args++;
+    if (*args) {
+        fs_load();
+        zuros_writer(args);
+    } else {
+        kprint("Usage: zw <filename>\n", (os_color & 0xF0) | 0x0C);
+    }
+}
+
+static char* skip_leading_whitespace(char* str) {
+    while (*str == '\n' || *str == ' ' || *str == '\t') str++;
+    return str;
+}
+
+void cmd_zscript(char* args) {
+    fs_load();
+    uint8_t buffer[MAX_FILE_CONTENT];
+
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (files[i].used && strcmp(files[i].name, args)) {
+            if (files[i].size >= MAX_FILE_CONTENT) return;
+
+            uint32_t len = files[i].size;
+            uint32_t sectors = (len + 511)/512;
+            uint32_t offset = 0;
+            for (uint32_t s = 0; s < sectors; s++) {
+                ata_read28(files[i].start + s, buffer);
+                uint32_t chunk = len - offset;
+                if (chunk > 512) chunk = 512;
+                memcpy(saved_files[0].content + offset, buffer, chunk);
+                offset += chunk;
+            }
+            saved_files[0].content[offset] = '\0';
+
+            // Split by ';' and execute each command except "exit"
+            char* cmd = saved_files[0].content;
+            char* next;
+            while ((next = strchr(cmd, ';'))) {
+                *next = '\0';
+                cmd = skip_leading_whitespace(cmd);
+
+                if (*cmd && !starts_with(cmd, "exit")) {
+                    handle_command(cmd);
+                }
+
+                cmd = next + 1;
+            }
+
+            // Handle the last command
+            cmd = skip_leading_whitespace(cmd);
+            if (*cmd && !starts_with(cmd, "exit")) {
+                handle_command(cmd);
+            }
+
+            return;
+        }
+    }
+
+    kprint("zscript file not found!\n", (os_color & 0xF0) | 0x0C);
+}
+void cmd_kprint(char* args) {
+	echo_kprint(args);
+	kprint(echo_text, echo_color);
+}
+
+// ----------------- Command struct -----------------
+typedef struct {
+    const char* name;
+    void (*func)(char*);
+} Command;
+
+Command commands[] = {
+    {"clear", cmd_clear},
+    {"help", cmd_help},
+    {"exit", cmd_exit},
+    {"test", cmd_test},
+    {"Z", cmd_Z},
+    {"ascii", cmd_ascii},
+    {"color", cmd_color},
+    {"dir", cmd_dir},
+    {"read", cmd_read},
+    {"write", cmd_write},
+    {"delete", cmd_delete},
+    {"zw", cmd_zw},
+    {"kprint", cmd_kprint},
+    {"zscript", cmd_zscript}
+};
+const int command_count = sizeof(commands)/sizeof(commands[0]);
+
+#define COMMAND_COUNT (sizeof(commands)/sizeof(commands[0]))
+
+void handle_command(char* buffer) {
+    while (*buffer == ' ') buffer++; // skip leading spaces
+
+    for (int i = 0; i < COMMAND_COUNT; i++) {
+        size_t len = strlen(commands[i].name);
+        if (starts_with(buffer, commands[i].name)) {
+
+            // special case: kprint wants the full buffer
+            if (strcmp(commands[i].name, "kprint") == 1) {
+                commands[i].func(buffer);  // pass entire buffer
+                return;
+            }
+
+            // normal case: pass args only
+            char* args = buffer + len;
+            while (*args == ' ') args++; // skip spaces after command
+            commands[i].func(args);
+            return;
+        }
+    }
+
+    kprint("Unknown command: ", os_color);
+    kprint(buffer, os_color);
+    kput_char('\n', os_color);
+}
+
 // finally we can run this little goober
 void kmain(void) {
 	os_color = 0x0F;
@@ -938,160 +1198,21 @@ void kmain(void) {
 	int running = 1;
     char buffer[256];
 
+    
     backup_and_delete_all_files();
     restore_all_files();
 
 	kprint("\nPress enter to continue...", os_color);
 	kread_line(buffer, 256);
 	kclear();
+
+	handle_command("zscript autostart.zs");
     
-	while (running) {
-	    kprint("~/[ZurOS >:3]$ ", (os_color & 0xF0) | 0x09);
-	    kread_line(buffer, 256);
-	    if (strcmp(buffer, "exit")) {
-	    	shutdown();
-	        running = 0;
-	    } else if (strcmp(buffer, "test")) {
-	    	kprint("Hello, World! - 0x00\n", 0x00);
-	    	kprint("Hello, World! - 0x01\n", 0x01);
-	    	kprint("Hello, World! - 0x02\n", 0x02);
-	    	kprint("Hello, World! - 0x03\n", 0x03);
-	    	kprint("Hello, World! - 0x04\n", 0x04);
-	    	kprint("Hello, World! - 0x05\n", 0x05);
-	    	kprint("Hello, World! - 0x06\n", 0x06);
-	    	kprint("Hello, World! - 0x07\n", 0x07);
-	    	kprint("Hello, World! - 0x08\n", 0x08);
-	    	kprint("Hello, World! - 0x09\n", 0x09);
-	    	kprint("Hello, World! - 0x0A\n", 0x0A);
-	    	kprint("Hello, World! - 0x0B\n", 0x0B);
-	    	kprint("Hello, World! - 0x0C\n", 0x0C);
-	    	kprint("Hello, World! - 0x0D\n", 0x0D);
-	    	kprint("Hello, World! - 0x0E\n", 0x0E);
-	    	kprint("Hello, World! - 0x0F\n", 0x0F);
-	    } else if (strcmp(buffer, "clear")) {
-	    	kclear();
-	    } else if (strcmp(buffer, "Z")) {
-	    	kprint("Przychodzi baba do lekarza...\n", os_color);
-	    	kprint("A lekarz tez baba!!!\n", os_color);
-	    } else if (starts_with(buffer, "color -themes")) {
-	    	        kprint("CLASSIC - 0x0F\n", 0x0F);
-	    	        kprint("LIGHT MODE - 0xF2\n", 0xF2);
-	    	        kprint("TEMPLE - 0xB2\n", 0xB2);
-	    	        kprint("UNREADABLE PINK - 0xDF\n", 0xDF);
-	    } else if (strcmp(buffer, "ascii")) {
-	    	    	        kprint("..........-+-:::::::::::::::::::::::::--\n", os_color);
-	    	    	        kprint(".........:=:---+:::::::::::::::--:::=###\n", os_color);
-	    	    	        kprint(".........:+:+----*::::::::-====*::::::##\n", os_color);
-	    	    	        kprint(":::......:*+:=================+::*-:::##\n", os_color);
-	    	    	        kprint(":.........=:-=+==============:==::::::::\n", os_color);
-	    	    	        kprint(":::::::..:#*=======+=========:-:::::::::\n", os_color);
-	    	    	        kprint(".........-:*::+============+==::::-::+::\n", os_color);
-	    	    	        kprint(".........::=::==+=::*#==*=-=+=-+::+:::=:\n", os_color);
-	    	    	        kprint(".:::-----::::++=+*%%::::::#-*===:::-::::\n", os_color);
-	    	    	        kprint("--------*-#-=====:=-:::::*+:===:=+-::::-\n", os_color);
-	    	    	        kprint("++++++++*#======*=-::::::::-=#=#*=#+**##\n", os_color);
-	    	    	        kprint("*#********+#=+%#=+::+=%%=:-*==#####*+###\n", os_color);
-	    	    	        kprint("*****#***##:::%%+#::::::::%%-:#####***%%\n", os_color);
-	    	    	        kprint("*********#%-::#%%*++#--#**%%::****#%*%%%\n", os_color);
-	    	    	        kprint("****#**%####::=%%%%%*+%%%%%=:#####*##%%%\n", os_color);
-	    	    	        kprint("***###%%#%%#-::#%%%%%%%%%%#:-*####*#%%%%\n", os_color);
-	    	    	        kprint("##***#-%%%=----+--#%#%%#+-:-::-*::+%%%%%\n", os_color);
-	    	    	        kprint("****-:::::::::::-=+#%%%--::++=:::-=----+\n", os_color);
-	    	    	        kprint("%%%------::::----#*%%=%%*---::::-+----++\n", os_color);
-	   	} else if (starts_with(buffer, "color ")) {
-	        // Skip "color " prefix
-	        const char* ptr = buffer + 6;
-	    
-	        // Expect "0x" or "0X"
-	        if (ptr[0] == '0' && (ptr[1] == 'x' || ptr[1] == 'X')) {
-	            ptr += 2;
-	            // Expect exactly two hex digits
-	            if ((ptr[0] >= '0' && ptr[0] <= '9') || (ptr[0] >= 'A' && ptr[0] <= 'F') || (ptr[0] >= 'a' && ptr[0] <= 'f')) {
-	                if ((ptr[1] >= '0' && ptr[1] <= '9') || (ptr[1] >= 'A' && ptr[1] <= 'F') || (ptr[1] >= 'a' && ptr[1] <= 'f')) {
-	                    os_color = (hex_to_nibble(ptr[0]) << 4) | hex_to_nibble(ptr[1]);
-	                    kclear();
-	                    continue;
-	                }
-	            }
-	        }
-	        kprint("Invalid color format! Use color 0xXY\n", (os_color & 0xF0) | 0x0C);
-	    } else if (strcmp(buffer, "help")) {
-	    	kprint("ZurOS commands list:\n", (os_color & 0xF0) | 0x0A);
-	    	kprint("ascii - prints out an ascii art of Felix Argyle\n", os_color);
-	    	kprint("clear - clears the screen\n", os_color);
-	    	kprint("color 0xXY - sets OS's color to 0xXY (example usage: color 0x0F, color 0x92, color 0xDF. For color codes 0x00-0x0F type test. You can use color codes in first 0 after x in the same way as in the second one, for example 0x0F is white text on black background and 0xF0 is black text on white background)\n", os_color);
-	    	kprint("color -themes - some cool color themes just for you\n", os_color);
-	    	kprint("dir - prints out list of all files saved on ZurOS's hdd.img\n", os_color);
-	    	kprint("delete X - deletes X file (example usage: delete not_important.txt)\n", os_color);
-	    	kprint("exit - shutdowns the computer\n", os_color);
-	    	kprint("help - prints out the list you're currently reading\n", os_color);
-	    	kprint("kprint \"X\", 0xYZ - uses kernel's kprint function, for more info type kprint -help\n", os_color);
-	    	kprint("read X - prints out content of X file (example usage: read important.txt)\n", os_color);
-	    	kprint("test - prints out \"Hello, World!\"\n", os_color);
-	    	kprint("write X Y - writes Y to X file (example usage: write important.txt Hello, World!)\n", os_color);
-	    	kprint("zw X - writes into X file with ZurOS writer (for more info: zw -help | example usage: zw important.txt)\n", os_color);
-	    	kprint("Z - very funny polish joke\n", os_color);
-	    } else if (starts_with(buffer, "kprint -help")) {
-	    	        kprint("How to use kernel's kprint function?\nkprint \"X\", YZ - prints text wrote in X with 0xYZ color\nSome examples: kprint \"Hello, World!\", 0x0F, kprint \"I like trains!\", 0x93\n", os_color);
-	   	} else if (starts_with(buffer, "kprint ")) {
-	        echo_kprint(buffer);
-	        kprint(echo_text, echo_color);
-		} else if (strcmp(buffer, "dir")) {
-			fs_load();
-		    fs_dir();
-		} else if (starts_with(buffer, "read ")) {
-		    fs_load();
-		    char* name = buffer + 5; // skip "read "
-		    fs_read_file(name);
-		} else if (starts_with(buffer, "write ")) {
-			fs_load();
-		
-		    char* args = buffer + 6;  // skip "write "
-		    while (*args == ' ') args++; // skip leading spaces
-
-		    // find first space separating filename from text
-		    char* space = strchr(args, ' ');
-		    if (!space) {
-		        kprint("Usage: write <filename> <text>\n", (os_color & 0xF0) | 0x0C);
-		        continue;
-		    }
-
-		    *space = '\0';         // terminate filename
-		    char* name = args;     // filename
-		    char* text = space + 1;
-		    fs_delete_file(name);
-		    while (*text == ' ') text++; // skip spaces before content
-
-		    if (name && *text) {
-		        fs_write_file(name, text);
-		        kprint("File written successfully!\n", (os_color & 0xF0) | 0x0A);
-		    } else {
-		        kprint("Usage: write <filename> <text>\n", (os_color & 0xF0) | 0x0C);
-		    }
-		    text = "";
-		    name = "";
-	   	} else if (starts_with(buffer, "delete ")) {
-	   	    fs_load();
-	   	    char* name = buffer + 7;  // skip "delete "
-	   	    fs_delete_file(name);
-	   	} else if (starts_with(buffer, "zw -help")) {
-			kprint("More about ZurOS writer\nZurOS writer, zw in short is a simple text editor with max 20 lines\nAt the bottom of the screen there will be a command prompt for zw, list of commands:\nX(int) Y(str) - writes Y to X line (\"3 Hello, World!\" will write \"Hello, World!\" at the 3th line)\nexit - exits and saves the file\ndistract - exits without saving\n", os_color);
-	   	} else if (starts_with(buffer, "zw ")) {
-	   	    char* filename = buffer + 3; // skip "zw "
-	   	    // optional: skip leading spaces
-	   	    while (*filename == ' ') filename++;
-	   	    if (*filename) {
-	   	        fs_load();               // make sure file table is up to date
-	   	        zuros_writer(filename);  // open the file in the editor
-	   	    } else {
-	   	        kprint("Usage: zw <filename>\n", (os_color & 0xF0) | 0x0C);
-	   	    }
-	   	} else {
-	        kprint("Unknown command: ", os_color);
-	        kprint(buffer, os_color);
-	        kput_char('\n', os_color);
-	    }
-	}
+    while (running) {
+        kprint("~/[ZurOS >:3]$ ", (os_color & 0xF0) | 0x09);
+        kread_line(buffer, 256);
+        handle_command(buffer);
+    }
 
     for (;;);
 }
