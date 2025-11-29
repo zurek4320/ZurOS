@@ -818,6 +818,7 @@ void zuros_writer(const char* filename) {
 
         // Exit command
         if (starts_with(line_input, "exit")) {
+        	fs_delete_file(filename);
             // Save file on exit
             char zw_text[ZW_LINES * ZW_WIDTH + 1];
             int idx = 0;
@@ -864,6 +865,59 @@ void zuros_writer(const char* filename) {
     }
 }
 
+#define MAX_SAVED_FILES 128
+#define MAX_FILE_CONTENT 4096
+
+typedef struct {
+    char name[16];
+    char content[MAX_FILE_CONTENT];
+} SavedFile;
+
+SavedFile saved_files[MAX_SAVED_FILES];
+int saved_count = 0;
+
+// Save all files into memory and delete them
+void backup_and_delete_all_files() {
+    fs_load();
+    saved_count = 0;
+
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (files[i].used && saved_count < MAX_SAVED_FILES) {
+            // Store name
+            strncpy(saved_files[saved_count].name, files[i].name, 16);
+
+            // Read file content into memory
+            uint32_t len = files[i].size;
+            if (len >= MAX_FILE_CONTENT) len = MAX_FILE_CONTENT - 1;
+
+            uint32_t sectors = (len + 511) / 512;
+            uint8_t buffer[512];
+            uint32_t offset = 0;
+
+            for (uint32_t s = 0; s < sectors; s++) {
+                ata_read28(files[i].start + s, buffer);
+                uint32_t remaining = len - s*512;
+                if (remaining > 512) remaining = 512;
+                memcpy(saved_files[saved_count].content + offset, buffer, remaining);
+                offset += remaining;
+            }
+            saved_files[saved_count].content[offset] = '\0';
+
+            saved_count++;
+
+            // Delete the file from FS
+            fs_delete_file(files[i].name);
+        }
+    }
+}
+
+// Restore all files from memory
+void restore_all_files() {
+    for (int i = 0; i < saved_count; i++) {
+        fs_write_file(saved_files[i].name, saved_files[i].content);
+    }
+}
+
 // finally we can run this little goober
 void kmain(void) {
 	os_color = 0x0F;
@@ -883,6 +937,9 @@ void kmain(void) {
 
 	int running = 1;
     char buffer[256];
+
+    backup_and_delete_all_files();
+    restore_all_files();
 
 	kprint("\nPress enter to continue...", os_color);
 	kread_line(buffer, 256);
@@ -1002,6 +1059,7 @@ void kmain(void) {
 		    *space = '\0';         // terminate filename
 		    char* name = args;     // filename
 		    char* text = space + 1;
+		    fs_delete_file(name);
 		    while (*text == ' ') text++; // skip spaces before content
 
 		    if (name && *text) {
