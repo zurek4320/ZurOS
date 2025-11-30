@@ -1126,6 +1126,115 @@ void cmd_kprint(char* args) {
 	kprint(echo_text, echo_color);
 }
 
+static void pcspk_play(uint32_t freq) {
+    uint32_t divisor = 1193180 / freq;
+
+    outb(0x43, 0xB6);
+    outb(0x42, (uint8_t)(divisor & 0xFF));
+    outb(0x42, (uint8_t)((divisor >> 8) & 0xFF));
+
+    uint8_t tmp = inb(0x61);
+    if (!(tmp & 3)) {
+        outb(0x61, tmp | 3);
+    }
+}
+
+static void pcspk_stop() {
+    uint8_t tmp = inb(0x61) & 0xFC;
+    outb(0x61, tmp);
+}
+
+static uint32_t note_to_freq(char n) {
+    switch (n) {
+        case 'c': return 261;
+        case 'd': return 294;
+        case 'e': return 329;
+        case 'f': return 349;
+        case 'g': return 392;
+        case 'a': return 440;
+        case 'b': return 494;
+    	case 'h': return 494;
+        default: return 0;
+    }
+}
+
+static void play_note(char note, int duration_ms) {
+    uint32_t freq = note_to_freq(note);
+    if (freq == 0) return;
+    pcspk_play(freq);
+    delay(duration_ms);
+    pcspk_stop();
+}
+
+static void play_melody(const char* melody) {
+    int i = 0;
+    while (melody[i]) {
+        // Skip spaces/tabs
+        while (melody[i] == ' ' || melody[i] == '\t') i++;
+
+        char note = melody[i];
+        if (!note) break;  // end of string
+
+        // Only valid notes or 'x'
+        if ((note < 'a' || note > 'h') && note != 'x') {
+            i++;
+            continue;
+        }
+
+        i++; // move past note
+
+        // skip spaces before duration
+        while (melody[i] == ' ' || melody[i] == '\t') i++;
+
+        // parse duration
+        int duration = 0;
+        while (melody[i] >= '0' && melody[i] <= '9') {
+            duration = duration * 10 + (melody[i] - '0');
+            i++;
+        }
+
+        // enforce minimum duration for safety
+        if (duration == 0) duration = 100;  // default 100ms if not specified
+
+        // play or rest
+        if (note == 'x') {
+            delay(duration);
+        } else {
+            play_note(note, duration);
+        }
+
+        // skip until semicolon (optional)
+        while (melody[i] && melody[i] != ':') i++;
+        if (melody[i] == ':') i++;
+    }
+}
+
+void cmd_beep(char *args) {
+    while (*args == ' ') args++;  // skip leading spaces
+
+    if (strchr(args, ':')) {
+        // Already handles full melody
+        play_melody(args);
+    } else {
+        char note = args[0];
+        int i = 1;
+        while (args[i] == ' ') i++;  // skip space between note and duration
+
+        int ms = 0;
+        while (args[i] >= '0' && args[i] <= '9') {
+            ms = ms * 10 + (args[i] - '0');
+            i++;
+        }
+
+        // 'x' outside melody = rest
+        if (note == 'x' || note == 'X') {
+            if (ms > 0) delay(ms);
+        } else {
+            if (ms > 0) play_note(note, ms);
+        }
+    }
+}
+
 // ----------------- Command struct -----------------
 typedef struct {
     const char* name;
@@ -1146,7 +1255,8 @@ Command commands[] = {
     {"delete", cmd_delete},
     {"zw", cmd_zw},
     {"kprint", cmd_kprint},
-    {"zscript", cmd_zscript}
+    {"zscript", cmd_zscript},
+    {"beep", cmd_beep}
 };
 const int command_count = sizeof(commands)/sizeof(commands[0]);
 
@@ -1178,39 +1288,39 @@ void handle_command(char* buffer) {
     kput_char('\n', os_color);
 }
 
-// finally we can run this little goober
 void kmain(void) {
-	os_color = 0x0F;
-	// using such a great function to clear the screen (actully just spam spaces)
+    os_color = 0x0F;
     kclear();
+    delay(2000);
 
-	// to print use: text, color
     kprint("Currently running ZurOS.\n", os_color);
     kprint("For help (commands list) write \"help\" and click enter.\n", os_color);
-	kprint("Any spaces or tabs before or after the command won't be removed so for example \"	help \" won't do anything at all.\n", os_color);
-	kprint("Use clear very often because ZurOS doesn't have any scrolling!\n\n", os_color);
+    kprint("Any spaces or tabs before or after the command won't be removed so for example \"\thelp \" won't do anything at all.\n", os_color);
+    kprint("Use clear very often because ZurOS doesn't have any scrolling!\n", os_color);
+    kprint("Exiting in any other way than typing \"exit\" can cause file corruption and data loss!\n\n", (os_color & 0xF0) | 0x0C);
 
-	uint8_t sec[512];
-	
-	kprint("Mounting FAT32...\n", os_color);
-	fat32_mount();
+    uint8_t sec[512];
 
-	int running = 1;
+    kprint("Mounting FAT32...\n", os_color);
+    fat32_mount();
+	fs_dir();
+
+    int running = 1;
     char buffer[256];
 
-    
     backup_and_delete_all_files();
     restore_all_files();
 
-	kprint("\nPress enter to continue...", os_color);
-	kread_line(buffer, 256);
-	kclear();
+    kprint("\nPress enter to continue...", os_color);
+    kread_line(buffer, 256);
+    kclear();
 
-	handle_command("zscript autostart.zs");
-    
+    handle_command("zscript autostart.zs");
+
     while (running) {
         kprint("~/[ZurOS >:3]$ ", (os_color & 0xF0) | 0x09);
         kread_line(buffer, 256);
+
         handle_command(buffer);
     }
 
