@@ -68,6 +68,26 @@ void kclear(void) {
     cursor_y = 0;
 }
 
+void scroll() {
+    // If we're still within the screen, nothing to do
+    if (cursor_y < VGA_HEIGHT)
+        return;
+
+    // Move everything up by one line
+    memcpy(
+        (void*)vga_memory,
+        (void*)(vga_memory + VGA_WIDTH),
+        (VGA_HEIGHT - 1) * VGA_WIDTH * 2     // two bytes per cell
+    );
+
+    // Clear last line
+    for (int x = 0; x < VGA_WIDTH; x++)
+        vga_memory[(VGA_HEIGHT - 1) * VGA_WIDTH + x] = (os_color << 8) | ' ';
+
+    // Place cursor on last line
+    cursor_y = VGA_HEIGHT - 1;
+}
+
 // prints out a single character (virgin function)
 void kput_char(char c, uint8_t color) {
     if (c == '\n') {
@@ -81,9 +101,8 @@ void kput_char(char c, uint8_t color) {
             cursor_y++;
         }
     }
-    if (cursor_y >= VGA_HEIGHT) {
-        cursor_y = 0;
-    }
+
+    scroll();
 }
 
 void kput_charnf(char c, uint8_t color, int y) {
@@ -958,6 +977,7 @@ void cmd_help(char* args) {
     (void)args;
     kprint("ZurOS commands list:\n", (os_color & 0xF0) | 0x0A);
     kprint("ascii - prints out an ascii art\n", os_color);
+    kprint("beep X Y - plays music from X notes (c-b) or pauses (x), for Yms (1000ms - 1s) separated by ':', for example: \"beep c 100: d 100: e 100: g 250: x 1000: c 100\"", os_color);
     kprint("clear - clears the screen\n", os_color);
     kprint("color 0xXY - sets OS's color\n", os_color);
     kprint("color -themes - shows color themes\n", os_color);
@@ -968,6 +988,7 @@ void cmd_help(char* args) {
     kprint("read X - prints file X\n", os_color);
     kprint("test - prints test messages\n", os_color);
     kprint("write X Y - writes Y to X file\n", os_color);
+    kprint("zscript X - runs X zscript file (.zs) with shell commands inside", os_color);
     kprint("zw X - opens ZurOS writer for file X\n", os_color);
     kprint("Z - very funny polish joke\n", os_color);
 }
@@ -1296,8 +1317,8 @@ void kmain(void) {
     kprint("Currently running ZurOS.\n", os_color);
     kprint("For help (commands list) write \"help\" and click enter.\n", os_color);
     kprint("Any spaces or tabs before or after the command won't be removed so for example \"\thelp \" won't do anything at all.\n", os_color);
-    kprint("Use clear very often because ZurOS doesn't have any scrolling!\n", os_color);
-    kprint("Exiting in any other way than typing \"exit\" can cause file corruption and data loss!\n\n", (os_color & 0xF0) | 0x0C);
+    kprint("Exiting in any other way than typing \"exit\" can cause file corruption and data loss!\n", (os_color & 0xF0) | 0x0C);
+    kprint("The file \"autostart.zs\" will always run when ZurOS starts up!\n\n", (os_color & 0xF0) | 0x0C);
 
     uint8_t sec[512];
 
@@ -1308,8 +1329,8 @@ void kmain(void) {
     int running = 1;
     char buffer[256];
 
-    backup_and_delete_all_files();
-    restore_all_files();
+    //backup_and_delete_all_files();
+    //restore_all_files();
 
     kprint("\nPress enter to continue...", os_color);
     kread_line(buffer, 256);
@@ -1323,6 +1344,5 @@ void kmain(void) {
 
         handle_command(buffer);
     }
-
     for (;;);
 }
