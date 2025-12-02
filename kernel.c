@@ -5,6 +5,20 @@
 #define VGA_WIDTH 80
 #define VGA_HEIGHT 25
 
+void unescape_newlines(char* str) {
+    int read = 0, write = 0;
+    while (str[read]) {
+        if (str[read] == '\\' && str[read+1] == 'n') {
+            str[write++] = '\n';
+            read += 2;
+        } else {
+            str[write++] = str[read++];
+        }
+    }
+    str[write] = '\0';
+}
+
+
 // ================== C funtions from C libs ==================
 void* memcpy(void* dest, const void* src, size_t n) {
     unsigned char* d = dest;
@@ -45,6 +59,15 @@ char* strchr(const char* s, int c) {
         s++;
     }
     return NULL;
+}
+
+int strncmp(const char* a, const char* b, size_t n) {
+    size_t i;
+    for (i = 0; i < n; i++) {
+        if (a[i] != b[i]) return (unsigned char)a[i] - (unsigned char)b[i];
+        if (a[i] == '\0') return 0;
+    }
+    return 0;
 }
 
 volatile uint16_t* vga_memory = (volatile uint16_t*)0xB8000;
@@ -327,7 +350,6 @@ size_t strlen(const char* str) {
     return len;
 }
 
-// strncpy
 char* strncpy(char* dest, const char* src, size_t n) {
     size_t i = 0;
     for (; i < n && src[i]; i++) dest[i] = src[i];
@@ -355,80 +377,50 @@ void shutdown(void) {
     for (;;); // hang if not powered off
 }
 
-void echo_kprint(const char* input) {
-    const char* prefix = "kprint ";
-    size_t prefix_len = 7;
+typedef struct {
+    enum { ARG_STR, ARG_INT } type;
+    union {
+        char* s;
+        int i;
+    } v;
+} PrintArg;
 
-    // Check prefix manually
-    int match = 1;
-    for (size_t i = 0; i < prefix_len; i++) {
-        if (input[i] != prefix[i]) {
-            match = 0;
-            break;
-        }
-    }
-    if (!match) {
-        echo_text[0] = '\0';
-        echo_color = os_color;
-        return;
-    }
+void kprintf_dynamic(const char* fmt, uint8_t color, PrintArg* list, int count) {
+    int idx = 0;
 
-    // Skip prefix and spaces
-    const char* ptr = input + prefix_len;
-    while (*ptr == ' ') ptr++;
+    const char* p = fmt;
+    while (*p) {
+        if (*p == '%') {
+            p++;
+            if (*p == 's') {
+                if (idx < count && list[idx].type == ARG_STR)
+                    kprint(list[idx++].v.s, color);
+            } else if (*p == 'i') {
+                if (idx < count && list[idx].type == ARG_INT) {
+                    char buf[32];
+                    int v = list[idx++].v.i;
 
-    // Expect opening quote
-    if (*ptr != '"') {
-        echo_text[0] = '\0';
-        echo_color = os_color;
-        return;
-    }
-    ptr++; // skip opening quote
+                    int pos = 0, neg = 0;
+                    if (v < 0) { neg = 1; v = -v; }
 
-    // Extract text until closing quote
-    char* out = echo_text;
-    while (*ptr && *ptr != '"') {
-        if (*ptr == '\\') { // handle escape sequences
-            ptr++;
-            if (*ptr == 'n') *out++ = '\n';
-            else if (*ptr == 't') *out++ = '\t';
-            else if (*ptr == '"') *out++ = '"';
-            else if (*ptr == '\\') *out++ = '\\';
-            else *out++ = *ptr; // unknown escape, copy literally
+                    if (v == 0) buf[pos++] = '0';
+                    else {
+                        char tmp[16];
+                        int t = 0;
+                        while (v) { tmp[t++] = (v % 10) + '0'; v /= 10; }
+                        if (neg) buf[pos++] = '-';
+                        while (t--) buf[pos++] = tmp[t];
+                    }
+                    buf[pos] = 0;
+                    kprint(buf, color);
+                }
+            }
+            else kput_char(*p, color);
         } else {
-            *out++ = *ptr;
+            kput_char(*p, color);
         }
-        ptr++;
+        p++;
     }
-    *out = '\0';
-
-    // Skip closing quote
-    if (*ptr == '"') ptr++;
-
-    // Skip spaces and comma
-    while (*ptr == ' ') ptr++;
-    if (*ptr != ',') {
-        echo_color = os_color; // default color
-        return;
-    }
-    ptr++; // skip comma
-    while (*ptr == ' ') ptr++;
-
-    // Parse color (hex) manually
-    unsigned char color = os_color;
-    if (ptr[0] == '0' && (ptr[1] == 'x' || ptr[1] == 'X')) {
-        ptr += 2;
-        while ((*ptr >= '0' && *ptr <= '9') ||
-               (*ptr >= 'A' && *ptr <= 'F') ||
-               (*ptr >= 'a' && *ptr <= 'f')) {
-            color <<= 4;
-            if (*ptr >= '0' && *ptr <= '9') color += *ptr - '0';
-            else if (*ptr >= 'A' && *ptr <= 'F') color += *ptr - 'A' + 10;
-            else if (*ptr >= 'a' && *ptr <= 'f') color += *ptr - 'a' + 10;
-            ptr++;
-        }
-    }
-    echo_color = color;
 }
 
 unsigned char hex_to_nibble(char c) {
@@ -659,7 +651,6 @@ void fs_build_bitmap() {
     }
 }
 
-// ----------------- new fs_write_file -----------------
 void fs_write_file(const char* name, const char* text) {
     // convert "\n" to real newlines
     uint32_t len = 0;
@@ -746,7 +737,6 @@ void fs_write_file(const char* name, const char* text) {
 
     kprint("No free file slots!\n", (os_color & 0xF0) | 0x0C);
 }
-
 
 void fs_dir() {
     for (int i = 0; i < MAX_FILES; i++) {
@@ -846,16 +836,13 @@ void zuros_writer(const char* filename) {
             }
             zw_text[idx] = '\0';
 
-            // Escape '\n' and '\' for storing in file
-            char escaped_text[ZW_LINES * (ZW_WIDTH * 2 + 3) + 1]; // max expansion
+            char escaped_text[ZW_LINES * (ZW_WIDTH + 1) + 1]; // enough space
+            // Escape '\n' only
             int j = 0;
             for (int i = 0; zw_text[i]; i++) {
                 if (zw_text[i] == '\n') {
                     escaped_text[j++] = '\\';
                     escaped_text[j++] = 'n';
-                } else if (zw_text[i] == '\\') {
-                    escaped_text[j++] = '\\';
-                    escaped_text[j++] = '\\';
                 } else {
                     escaped_text[j++] = zw_text[i];
                 }
@@ -964,8 +951,179 @@ void delay(uint32_t milliseconds) {    volatile uint32_t count;
     }
 }
 
-
 void handle_command(char* buffer);
+
+// ----------------- Shell variables adsgfadgad -----------------
+
+#define MAX_VARS 64
+#define MAX_VAR_NAME 32
+#define MAX_VAR_VALUE 256
+
+typedef enum { VAR_INT, VAR_STR } VarType;
+
+typedef struct {
+    char name[MAX_VAR_NAME];
+    VarType type;
+    int int_value;
+    char str_value[MAX_VAR_VALUE];
+    uint8_t used;
+} Variable;
+
+Variable vars[MAX_VARS];
+
+Variable* find_var(const char* name) {
+    for (int i = 0; i < MAX_VARS; i++) {
+        if (vars[i].used && strcmp(vars[i].name, name)) {
+            return &vars[i];
+        }
+    }
+    return NULL;
+}
+
+Variable* set_var_int(const char* name, int value) {
+    Variable* v = find_var(name);
+    if (!v) {
+        for (int i = 0; i < MAX_VARS; i++) {
+            if (!vars[i].used) {
+                v = &vars[i];
+                v->used = 1;
+                strncpy(v->name, name, MAX_VAR_NAME);
+                break;
+            }
+        }
+    }
+    if (!v) return NULL;
+
+    v->type = VAR_INT;
+    v->int_value = value;
+    return v;
+}
+
+Variable* set_var_str(const char* name, const char* value) {
+    Variable* v = find_var(name);
+    if (!v) {
+        for (int i = 0; i < MAX_VARS; i++) {
+            if (!vars[i].used) {
+                v = &vars[i];
+                v->used = 1;
+                strncpy(v->name, name, MAX_VAR_NAME);
+                break;
+            }
+        }
+    }
+    if (!v) return NULL;
+
+    v->type = VAR_STR;
+    strncpy(v->str_value, value, MAX_VAR_VALUE);
+    return v;
+}
+
+void cmd_str(char* args) {
+    char* p = args;
+
+    // read name
+    char name[MAX_VAR_NAME];
+    int ni = 0;
+
+    while (*p && *p != ' ' && *p != '=' && ni < MAX_VAR_NAME - 1) {
+        name[ni++] = *p++;
+    }
+    name[ni] = 0;
+
+    if (ni == 0) {
+        kprint("missing name\n", os_color);
+        return;
+    }
+
+    // skip spaces
+    while (*p == ' ') p++;
+
+    // require =
+    if (*p != '=') {
+        kprint("syntax error: expected '='\n", os_color);
+        return;
+    }
+    p++;
+
+    // skip spaces
+    while (*p == ' ') p++;
+
+    // require starting quote
+    if (*p != '"') {
+        kprint("syntax error: expected opening '\"'\n", os_color);
+        return;
+    }
+    p++;
+
+    // read string value
+    char value[MAX_VAR_VALUE];
+    int vi = 0;
+
+    while (*p && *p != '"' && vi < MAX_VAR_VALUE - 1) {
+        value[vi++] = *p++;
+    }
+    value[vi] = 0;
+
+    if (*p != '"') {
+        kprint("syntax error: missing closing '\"'\n", os_color);
+        return;
+    }
+
+    set_var_str(name, value);
+    kprint("ok\n", os_color);
+}
+
+void cmd_int(char* args) {
+    char* p = args;
+
+    // read name
+    char name[MAX_VAR_NAME];
+    int ni = 0;
+
+    while (*p && *p != ' ' && *p != '=' && ni < MAX_VAR_NAME - 1) {
+        name[ni++] = *p++;
+    }
+    name[ni] = 0;
+
+    if (ni == 0) {
+        kprint("missing name\n", os_color);
+        return;
+    }
+
+    // skip spaces
+    while (*p == ' ') p++;
+
+    // require =
+    if (*p != '=') {
+        kprint("syntax error: expected '='\n", os_color);
+        return;
+    }
+    p++;
+
+    // skip spaces
+    while (*p == ' ') p++;
+
+    // read integer (supports sign)
+    int neg = 0;
+    int value = 0;
+
+    if (*p == '-') { neg = 1; p++; }
+
+    if (*p < '0' || *p > '9') {
+        kprint("syntax error: expected number\n", os_color);
+        return;
+    }
+
+    while (*p >= '0' && *p <= '9') {
+        value = value * 10 + (*p - '0');
+        p++;
+    }
+
+    if (neg) value = -value;
+
+    set_var_int(name, value);
+    kprint("ok\n", os_color);
+}
 
 // ----------------- Command functions -----------------
 void cmd_clear(char* args) {
@@ -984,8 +1142,10 @@ void cmd_help(char* args) {
     kprint("dir - lists all files\n", os_color);
     kprint("delete X - deletes file X\n", os_color);
     kprint("exit - shuts down computer\n", os_color);
-    kprint("kprint \"X\", YZ - prints X in color YZ\n", os_color);
+    kprint("int X = Y - sets X integer variable to Y", os_color);
+    kprint("kprint \"X\", Y, Z - prints X in Z color (Z arg is optional) with Y args (for example kprint \"Hello, %s you are %i years old\", name, age, 0x0F)\n", os_color);
     kprint("read X - prints file X\n", os_color);
+    kprint("str X = \"Y\" - sets X string variable to \"Y\"", os_color);
     kprint("test - prints test messages\n", os_color);
     kprint("write X Y - writes Y to X file\n", os_color);
     kprint("zscript X - runs X zscript file (.zs) with shell commands inside", os_color);
@@ -1142,9 +1302,95 @@ void cmd_zscript(char* args) {
 
     kprint("zscript file not found!\n", (os_color & 0xF0) | 0x0C);
 }
-void cmd_kprint(char* args) {
-	echo_kprint(args);
-	kprint(echo_text, echo_color);
+
+void cmd_kprint(char* input) {
+    const char* ptr = input;
+
+    if (strncmp(ptr, "kprint", 6) != 0)
+        return;
+
+    ptr += 6;
+    while (*ptr == ' ') ptr++;
+
+    if (*ptr != '"') {
+        kprint("err: missing quote\n", os_color);
+        return;
+    }
+    ptr++;
+
+    static char fmt[256];
+    int fi = 0;
+
+    while (*ptr && *ptr != '"' && fi < 255) {
+        fmt[fi++] = *ptr++;
+    }
+    fmt[fi] = 0;
+
+    if (*ptr != '"') {
+        kprint("err: missing closing quote\n", os_color);
+        return;
+    }
+    ptr++; // skip closing quote
+
+    PrintArg args_list[8];
+    int arg_count = 0;
+
+    while (*ptr == ' ') ptr++;
+    if (*ptr == ',') ptr++;
+
+    while (*ptr) {
+        while (*ptr == ' ') ptr++;
+
+        // stop at color specifier
+        if (ptr[0] == '0' && ptr[1] == 'x')
+            break;
+
+        // read variable name
+        char name[32];
+        int ni = 0;
+        while (*ptr && *ptr != ',' && *ptr != ' ' && ni < 31)
+            name[ni++] = *ptr++;
+        name[ni] = 0;
+
+        Variable* v = find_var(name);
+        if (!v) {
+            kprint("err: unknown var\n", os_color);
+            return;
+        }
+
+        if (v->type == VAR_STR) {
+            args_list[arg_count].type = ARG_STR;
+            args_list[arg_count].v.s = v->str_value;
+        } else {
+            args_list[arg_count].type = ARG_INT;
+            args_list[arg_count].v.i = v->int_value;
+        }
+        arg_count++;
+
+        while (*ptr == ' ') ptr++;
+        if (*ptr == ',') ptr++;
+        else break;
+    }
+
+    uint8_t color = os_color;
+
+    if (ptr[0] == '0' && (ptr[1] == 'x' || ptr[1] == 'X')) {
+        ptr += 2;
+        color = 0;
+        while ( (*ptr >= '0' && *ptr <= '9') ||
+                (*ptr >= 'A' && *ptr <= 'F') ||
+                (*ptr >= 'a' && *ptr <= 'f') ) {
+
+            color <<= 4;
+            if (*ptr >= '0' && *ptr <= '9') color += *ptr - '0';
+            else if (*ptr >= 'A' && *ptr <= 'F') color += *ptr - 'A' + 10;
+            else color += *ptr - 'a' + 10;
+
+            ptr++;
+        }
+    }
+
+    kprintf_dynamic(fmt, color, args_list, arg_count);
 }
 
 static void pcspk_play(uint32_t freq) {
@@ -1277,7 +1523,9 @@ Command commands[] = {
     {"zw", cmd_zw},
     {"kprint", cmd_kprint},
     {"zscript", cmd_zscript},
-    {"beep", cmd_beep}
+    {"beep", cmd_beep},
+    {"str", cmd_str},
+    {"int", cmd_int}
 };
 const int command_count = sizeof(commands)/sizeof(commands[0]);
 
@@ -1316,7 +1564,6 @@ void kmain(void) {
 
     kprint("Currently running ZurOS.\n", os_color);
     kprint("For help (commands list) write \"help\" and click enter.\n", os_color);
-    kprint("Any spaces or tabs before or after the command won't be removed so for example \"\thelp \" won't do anything at all.\n", os_color);
     kprint("Exiting in any other way than typing \"exit\" can cause file corruption and data loss!\n", (os_color & 0xF0) | 0x0C);
     kprint("The file \"autostart.zs\" will always run when ZurOS starts up!\n\n", (os_color & 0xF0) | 0x0C);
 
